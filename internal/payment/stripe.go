@@ -3,9 +3,11 @@ package payment
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/Rhymond/go-money"
-	"github.com/stripe/stripe-go/v73/client"
+	"github.com/stripe/stripe-go/v74"
+	"github.com/stripe/stripe-go/v74/client"
 )
 
 type StripeService struct {
@@ -24,5 +26,16 @@ func NewStripeService(apiKey string) (*StripeService, error) {
 }
 
 func (s StripeService) ChargeCard(ctx context.Context, amount money.Money, cardToken string) error {
-	//here
+	params := &stripe.ChargeParams{
+		Amount:   stripe.Int64(amount.Amount()),
+		Currency: stripe.String(string(stripe.CurrencyUSD)),
+		Source:   &stripe.PaymentSourceSourceParams{Token: stripe.String(cardToken)},
+	}
+	_, err := s.stripeClient.Charges.New(params)
+
+	if err != nil {
+		return fmt.Errorf("failed to create a charge:%w", err)
+	}
+
+	return nil
 }

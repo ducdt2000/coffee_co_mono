@@ -2,10 +2,12 @@ package purchase
 
 import (
 	coffee_co "coffee_co/internal"
+	"coffee_co/internal/loyalty"
 	"coffee_co/internal/payment"
 	"coffee_co/internal/store"
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Rhymond/go-money"
@@ -42,21 +44,34 @@ func (p *Purchase) validateAndEnrich() error {
 
 type Service struct {
 	cardChargeService CardChargeService
+	storeService      StoreService
 	purchaseRepo      Repository
 }
 
-func (s Service) CompletePurchase(ctx context.Context, purchase *Purchase) error {
+func NewService(cardChargeService CardChargeService, storeService StoreService, purchaseRepo Repository) *Service {
+	return &Service{cardChargeService: cardChargeService, storeService: storeService, purchaseRepo: purchaseRepo}
+}
+
+func (s Service) CompletePurchase(ctx context.Context, purchase *Purchase, coffeeBuxCard *loyalty.CoffeeBux) error {
 	if err := purchase.validateAndEnrich(); err != nil {
+		return err
+	}
+
+	if err := s.calculateStoreSpecificDiscount(ctx, purchase.Store.ID, purchase); err != nil {
 		return err
 	}
 
 	switch purchase.PaymentMeans {
 	case payment.MEANS_CARD:
-		if err := s.cardChargeService.ChargeCard(ctx, purchase.Total, *&purchase.CardToken); err != nil {
+		if err := s.cardChargeService.ChargeCard(ctx, purchase.Total, purchase.CardToken); err != nil {
 			return errors.New("card charge failed, cancelling purchase")
 		}
 	case payment.MEANS_CASH:
 		//TODO: for reader to add
+	case payment.MEANS_COFFEBUX:
+		if err := coffeeBuxCard.Pay(ctx, purchase.ProductsToPurchase); err != nil {
+			return fmt.Errorf("failed to charge loyalty card: %w", err)
+		}
 	default:
 		return errors.New("unknown payment type")
 	}
@@ -64,5 +79,21 @@ func (s Service) CompletePurchase(ctx context.Context, purchase *Purchase) error
 		return errors.New("failed to store purchase")
 	}
 
+	if coffeeBuxCard != nil && purchase.PaymentMeans != payment.MEANS_COFFEBUX {
+		coffeeBuxCard.AddStamp()
+	}
+
+	return nil
+}
+
+func (s Service) calculateStoreSpecificDiscount(ctx context.Context, storeID uuid.UUID, purchase *Purchase) error {
+	discount, err := s.storeService.GetStoreSpecificDiscount(ctx, storeID)
+	if err != nil && err != store.ErrNoDiscount {
+		return fmt.Errorf("failed to get discount: %w", err)
+	}
+	purchasePrice := purchase.Total
+	if discount > 0 {
+		purchase.Total = *purchasePrice.Multiply(int64(100 - discount))
+	}
 	return nil
 }
